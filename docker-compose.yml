@@ -1,0 +1,20 @@
+version: "3.8"
+services:
+  web1:
+    build: ./web
+  web2:
+    build: ./web
+  web3:
+    build: ./web
+
+  proxy:
+    image: nginx:latest
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./logs:/var/log/nginx
+    depends_on:
+      - web1
+      - web2
+      - web3
