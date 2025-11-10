@@ -48,7 +48,23 @@ av3-loadbalancer/
 └── README.md
 
 ````
+## ✅ Pré‑requisitos
 
+Antes de rodar o projeto, instale as dependências abaixo no host (Ubuntu/Debian):
+
+```bash
+# Atualizar pacotes
+sudo apt update=
+
+# Utilitário para gerar carga (ab) e manipular headers
+sudo apt install -y apache2-utils
+
+# Python e bibliotecas para análise/gráficos
+sudo apt install -y python3-pip
+pip3 install --user pandas matplotlib
+```
+
+Observação: instale o Docker seguindo as instruções oficiais para sua distribuição. Após adicionar seu usuário ao grupo docker, faça logout/login para aplicar a mudança.
 ---
 
 ## ⚙️ Configuração do Ambiente

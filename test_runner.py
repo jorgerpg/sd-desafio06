@@ -69,7 +69,8 @@ AB_DEFAULT_OPTS = ["-r", "-s", "60"]
 
 def run_ab_test(n, c):
   """Executa ApacheBench e retorna métricas."""
-  cmd = ["ab", *AB_DEFAULT_OPTS, "-n", str(n), "-c", str(c), "http://localhost/"]
+  cmd = ["ab", *AB_DEFAULT_OPTS, "-n",
+         str(n), "-c", str(c), "http://localhost/"]
   result = subprocess.run(cmd, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True)
   output = result.stdout
@@ -129,41 +130,40 @@ def get_server_distribution():
 results = []
 test_matrix = [(1000, 10), (1000, 100)]
 
-for mode in MODES:
-  set_nginx_mode(mode)
-  time.sleep(2)
+for scenario in SCENARIOS:
 
-  for n, c in test_matrix:
-    for scenario in SCENARIOS:
+  if scenario == "falha":
+    print("[SIM] 💥 Pausando web1 para simular falha...")
+    subprocess.run(["docker", "pause", "sd-desafio06-web1-1"])
+    time.sleep(3)
+
+  for mode in MODES:
+    set_nginx_mode(mode)
+    time.sleep(2)
+
+    for n, c in test_matrix:
       clear_nginx_log()
 
+      print(f"[RUN] {mode} - {scenario} - n={n}, c={c}")
+      rps, tpr = run_ab_test(n, c)
+      dist = get_server_distribution()
+      if rps == 0:
+        rps = dist.get("logged_requests_per_sec", 0)
+      if tpr == 0:
+        tpr = dist.get("logged_time_per_req_ms", 0)
       if scenario == "falha":
-        print("[SIM] 💥 Pausando web1 para simular falha...")
-        subprocess.run(["docker", "pause", "sd-desafio06-web1-1"])
-        time.sleep(1)
+        dist["web1_requests"] = 0
+        dist["web1_avg_time_ms"] = 0.0
+      dist.update({
+          "mode": mode, "n": n, "c": c,
+          "requests_per_sec": rps,
+          "time_per_req": tpr,
+          "scenario": scenario
+      })
+      results.append(dist)
 
-      try:
-        print(f"[RUN] {mode} - {scenario} - n={n}, c={c}")
-        rps, tpr = run_ab_test(n, c)
-        dist = get_server_distribution()
-        if rps == 0:
-          rps = dist.get("logged_requests_per_sec", 0)
-        if tpr == 0:
-          tpr = dist.get("logged_time_per_req_ms", 0)
-        if scenario == "falha":
-          dist["web1_requests"] = 0
-          dist["web1_avg_time_ms"] = 0.0
-        dist.update({
-            "mode": mode, "n": n, "c": c,
-            "requests_per_sec": rps,
-            "time_per_req": tpr,
-            "scenario": scenario
-        })
-        results.append(dist)
-      finally:
-        if scenario == "falha":
-          subprocess.run(["docker", "unpause", "sd-desafio06-web1-1"])
-          time.sleep(2)
+subprocess.run(["docker", "unpause", "sd-desafio06-web1-1"])
+time.sleep(2)
 
 # ============================================================
 # Salvando resultados e gráficos
