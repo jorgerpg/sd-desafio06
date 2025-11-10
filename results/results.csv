@@ -1,4 +1,0 @@
-mode,requests_per_sec,time_per_req,web1,web2,web3
-round_robin,779.68,64.129,0,0,0
-least_conn,873.14,57.264,0,0,0
-ip_hash,856.69,58.364,0,0,0

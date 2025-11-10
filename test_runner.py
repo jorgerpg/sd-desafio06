@@ -11,7 +11,8 @@ import os
 NGINX_CONF = "nginx/nginx.conf"
 MODES = ["round_robin", "least_conn", "ip_hash"]
 RESULTS_DIR = "results"
-AB_COMMAND = ["ab", "-n", "1000", "-c", "50", "http://localhost/"]
+AB_BASE = ["ab", "-n", "1000", "-c", "50", "http://localhost/"]
+SCENARIOS = ["normal", "falha"]
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -19,99 +20,144 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # Funções auxiliares
 # ============================================================
 
+
+def clear_nginx_log():
+  """Zera o access.log antes de cada rodada."""
+  subprocess.run(
+      ["docker", "exec", "sd-desafio06-proxy-1",
+       "sh", "-c", "echo '' > /var/log/nginx/access.log"]
+  )
+
+
 def set_nginx_mode(mode):
-    """Altera o modo de balanceamento no nginx.conf."""
-    with open(NGINX_CONF, "r") as f:
-        conf = f.read()
+  """Ativa o algoritmo desejado no nginx.conf e recarrega o proxy."""
+  with open(NGINX_CONF, "r") as f:
+    conf = f.read()
 
-    if mode == "round_robin":
-        conf = re.sub(r"(least_conn;|ip_hash;)", "# \\1", conf)
-    elif mode == "least_conn":
-        conf = re.sub(r"upstream backend \{", "upstream backend {\n        least_conn;", conf)
-        conf = conf.replace("ip_hash;", "# ip_hash;")
-    elif mode == "ip_hash":
-        conf = re.sub(r"upstream backend \{", "upstream backend {\n        ip_hash;", conf)
-        conf = conf.replace("least_conn;", "# least_conn;")
+  conf = re.sub(r"(least_conn;|ip_hash;)", "# \\1", conf)
+  if mode == "least_conn":
+    conf = conf.replace(
+        "upstream backend {", "upstream backend {\n        least_conn;")
+  elif mode == "ip_hash":
+    conf = conf.replace(
+        "upstream backend {", "upstream backend {\n        ip_hash;")
 
-    with open(NGINX_CONF, "w") as f:
-        f.write(conf)
+  with open(NGINX_CONF, "w") as f:
+    f.write(conf)
 
-    # Reinicia o proxy
-    subprocess.run(["docker", "exec", "sd-desafio06-proxy-1", "nginx", "-s", "reload"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    print(f"[INFO] Nginx reiniciado com modo: {mode}")
+  subprocess.run(
+      ["docker", "exec", "sd-desafio06-proxy-1", "nginx", "-s", "reload"],
+      stdout=subprocess.PIPE, stderr=subprocess.PIPE
+  )
+  print(f"[INFO] 🔄 Nginx reiniciado em modo: {mode}")
 
-def run_ab_test(mode):
-    """Executa o ApacheBench e retorna tempo médio e throughput."""
-    print(f"[TEST] Rodando modo {mode}...")
-    result = subprocess.run(AB_COMMAND, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    output = result.stdout
 
-    # Extrai dados do output
-    requests_per_sec = re.search(r"Requests per second:\s+([\d\.]+)", output)
-    time_per_req = re.search(r"Time per request:\s+([\d\.]+)", output)
+def run_ab_test(n, c):
+  """Executa ApacheBench e retorna métricas."""
+  cmd = ["ab", "-n", str(n), "-c", str(c), "http://localhost/"]
+  result = subprocess.run(cmd, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True)
+  output = result.stdout
 
-    return {
-        "mode": mode,
-        "requests_per_sec": float(requests_per_sec.group(1)) if requests_per_sec else 0,
-        "time_per_req": float(time_per_req.group(1)) if time_per_req else 0
-    }
+  rps = re.search(r"Requests per second:\s+([\d\.]+)", output)
+  tpr = re.search(r"Time per request:\s+([\d\.]+)", output)
+
+  return (
+      float(rps.group(1)) if rps else 0,
+      float(tpr.group(1)) if tpr else 0
+  )
+
 
 def get_server_distribution():
-    """Analisa access.log para contar quantas requisições cada servidor atendeu."""
-    logs = subprocess.run(["docker", "exec", "sd-desafio06-proxy-1", "cat", "/var/log/nginx/access.log"], stdout=subprocess.PIPE, text=True).stdout
-    servers = re.findall(r"web\d+", logs)
-    counts = {f"web{i}": servers.count(f"web{i}") for i in range(1, 4)}
-    return counts
+  """Conta requisições por backend com base no IP dos containers."""
+  container_ips = {}
+  for i in range(1, 4):
+    name = f"sd-desafio06-web{i}-1"
+    ip = subprocess.run(
+        ["docker", "inspect", "-f",
+         "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name],
+        stdout=subprocess.PIPE, text=True
+    ).stdout.strip()
+    container_ips[ip] = f"web{i}"
+
+  logs = subprocess.run(
+      ["docker", "exec", "sd-desafio06-proxy-1",
+       "cat", "/var/log/nginx/access.log"],
+      stdout=subprocess.PIPE, text=True
+  ).stdout
+
+  counts = {f"web{i}": 0 for i in range(1, 4)}
+  for ip, label in container_ips.items():
+    counts[label] = logs.count(ip)
+
+  return counts
+
 
 # ============================================================
 # Execução dos testes
 # ============================================================
-all_results = []
+results = []
+test_matrix = [(500, 10), (1000, 50)]
+
 for mode in MODES:
-    set_nginx_mode(mode)
-    time.sleep(2)  # Aguarda reload
-    res = run_ab_test(mode)
-    dist = get_server_distribution()
-    res.update(dist)
-    all_results.append(res)
+  set_nginx_mode(mode)
+  time.sleep(2)
+
+  for n, c in test_matrix:
+    for scenario in SCENARIOS:
+      clear_nginx_log()
+
+      if scenario == "falha":
+        print("[SIM] 💥 Pausando web1 para simular falha...")
+        subprocess.run(["docker", "pause", "sd-desafio06-web1-1"])
+        time.sleep(1)
+
+      print(f"[RUN] {mode} - {scenario} - n={n}, c={c}")
+      rps, tpr = run_ab_test(n, c)
+      dist = get_server_distribution()
+      dist.update({
+          "mode": mode, "n": n, "c": c,
+          "requests_per_sec": rps,
+          "time_per_req": tpr,
+          "scenario": scenario
+      })
+      results.append(dist)
+
+      if scenario == "falha":
+        subprocess.run(["docker", "unpause", "sd-desafio06-web1-1"])
+        time.sleep(2)
 
 # ============================================================
-# Salvando resultados
+# Salvando resultados e gráficos
 # ============================================================
-df = pd.DataFrame(all_results)
-df.to_csv(os.path.join(RESULTS_DIR, "results.csv"), index=False)
-print("\n[OK] Resultados salvos em results/results.csv")
+df = pd.DataFrame(results)
+csv_path = os.path.join(RESULTS_DIR, "results_full.csv")
+df.to_csv(csv_path, index=False)
+print(f"\n✅ Resultados salvos em {csv_path}\n")
 
-# ============================================================
 # Gráficos
-# ============================================================
 plt.figure(figsize=(10, 6))
-plt.bar(df["mode"], df["requests_per_sec"])
-plt.title("Desempenho - Requests por Segundo")
+for mode in MODES:
+  subset = df[(df["mode"] == mode) & (df["scenario"] == "normal")]
+  plt.plot(subset["c"], subset["requests_per_sec"], marker='o', label=mode)
+plt.title("Requests por Segundo (Cenário Normal)")
+plt.xlabel("Concorrência (-c)")
 plt.ylabel("req/s")
-plt.savefig(os.path.join(RESULTS_DIR, "requests_per_sec.png"))
-plt.close()
-
-plt.figure(figsize=(10, 6))
-plt.bar(df["mode"], df["time_per_req"])
-plt.title("Tempo Médio por Requisição (ms)")
-plt.ylabel("ms")
-plt.savefig(os.path.join(RESULTS_DIR, "time_per_request.png"))
-plt.close()
-
-# Distribuição de requisições por servidor
-df_plot = df.melt(id_vars=["mode"], value_vars=["web1", "web2", "web3"],
-                  var_name="server", value_name="requests")
-
-plt.figure(figsize=(10, 6))
-for server in ["web1", "web2", "web3"]:
-    plt.plot(df_plot[df_plot["server"] == server]["mode"],
-             df_plot[df_plot["server"] == server]["requests"],
-             marker='o', label=server)
-plt.title("Distribuição de Requisições por Servidor")
-plt.ylabel("Quantidade de Requisições")
 plt.legend()
-plt.savefig(os.path.join(RESULTS_DIR, "server_distribution.png"))
+plt.grid(True)
+plt.savefig(os.path.join(RESULTS_DIR, "requests_per_sec_full.png"))
 plt.close()
 
-print("[OK] Gráficos gerados em results/")
+plt.figure(figsize=(10, 6))
+for mode in MODES:
+  subset = df[(df["mode"] == mode) & (df["scenario"] == "normal")]
+  plt.plot(subset["c"], subset["time_per_req"], marker='o', label=mode)
+plt.title("Tempo Médio por Requisição (ms)")
+plt.xlabel("Concorrência (-c)")
+plt.ylabel("ms")
+plt.legend()
+plt.grid(True)
+plt.savefig(os.path.join(RESULTS_DIR, "time_per_request_full.png"))
+plt.close()
+
+print("✅ Gráficos atualizados em results/")

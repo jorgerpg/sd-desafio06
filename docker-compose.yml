@@ -2,10 +2,18 @@ version: "3.8"
 services:
   web1:
     build: ./web
+    environment:
+      - SERVER_NAME=web1
+
   web2:
     build: ./web
+    environment:
+      - SERVER_NAME=web2
+
   web3:
     build: ./web
+    environment:
+      - SERVER_NAME=web3
 
   proxy:
     image: nginx:latest
