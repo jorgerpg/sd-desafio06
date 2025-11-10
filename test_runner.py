@@ -3,6 +3,7 @@ import re
 import time
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 
 # ============================================================
@@ -11,8 +12,13 @@ import os
 NGINX_CONF = "nginx/nginx.conf"
 MODES = ["round_robin", "least_conn", "ip_hash"]
 RESULTS_DIR = "results"
-AB_BASE = ["ab", "-n", "1000", "-c", "50", "http://localhost/"]
 SCENARIOS = ["normal", "falha"]
+BACKENDS = [f"web{i}" for i in range(1, 4)]
+LOG_LINE_PATTERN = re.compile(
+    r'"(?P<method>\S+) (?P<path>\S+) (?P<proto>[^"]+)" '
+    r'(?P<status>\d{3}) .*? upstream=(?P<upstream>[\d\.]+:\d+) '
+    r'backend_name=(?P<backend>[\w-]+) request_time=(?P<request_time>[\d\.]+)'
+)
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -69,35 +75,50 @@ def run_ab_test(n, c):
 
 
 def get_server_distribution():
-  """Conta requisições por backend com base no IP dos containers."""
-  container_ips = {}
-  for i in range(1, 4):
-    name = f"sd-desafio06-web{i}-1"
-    ip = subprocess.run(
-        ["docker", "inspect", "-f",
-         "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name],
-        stdout=subprocess.PIPE, text=True
-    ).stdout.strip()
-    container_ips[ip] = f"web{i}"
-
-  logs = subprocess.run(
+  """Extrai métricas por backend usando backend_name e request_time dos logs."""
+  log_output = subprocess.run(
       ["docker", "exec", "sd-desafio06-proxy-1",
        "cat", "/var/log/nginx/access.log"],
       stdout=subprocess.PIPE, text=True
   ).stdout
 
-  counts = {f"web{i}": 0 for i in range(1, 4)}
-  for ip, label in container_ips.items():
-    counts[label] = logs.count(ip)
+  rows = []
+  for line in log_output.strip().splitlines():
+    match = LOG_LINE_PATTERN.search(line)
+    if not match:
+      continue
+    rows.append({
+        "backend_name": match.group("backend"),
+        "status": int(match.group("status")),
+        "request_time": float(match.group("request_time"))
+    })
 
-  return counts
+  if not rows:
+    empty_stats = {}
+    for backend in BACKENDS:
+      empty_stats[f"{backend}_requests"] = 0
+      empty_stats[f"{backend}_avg_time_ms"] = 0.0
+    empty_stats["total_requests_logged"] = 0
+    return empty_stats
+
+  log_df = pd.DataFrame(rows)
+  stats = {}
+  for backend in BACKENDS:
+    backend_df = log_df[log_df["backend_name"] == backend]
+    stats[f"{backend}_requests"] = len(backend_df)
+    stats[f"{backend}_avg_time_ms"] = (
+        backend_df["request_time"].mean(
+        ) * 1000 if not backend_df.empty else 0.0
+    )
+  stats["total_requests_logged"] = len(log_df)
+  return stats
 
 
 # ============================================================
 # Execução dos testes
 # ============================================================
 results = []
-test_matrix = [(500, 10), (1000, 50)]
+test_matrix = [(1000, 10), (1000, 100)]
 
 for mode in MODES:
   set_nginx_mode(mode)
@@ -131,33 +152,87 @@ for mode in MODES:
 # Salvando resultados e gráficos
 # ============================================================
 df = pd.DataFrame(results)
+total_requests = df[[f"{b}_requests" for b in BACKENDS]].sum(axis=1)
+total_requests = total_requests.replace(0, np.nan)
+for backend in BACKENDS:
+  df[f"{backend}_share"] = df[f"{backend}_requests"] / total_requests
+df.fillna(0, inplace=True)
+
 csv_path = os.path.join(RESULTS_DIR, "results_full.csv")
 df.to_csv(csv_path, index=False)
 print(f"\n✅ Resultados salvos em {csv_path}\n")
 
 # Gráficos
-plt.figure(figsize=(10, 6))
-for mode in MODES:
-  subset = df[(df["mode"] == mode) & (df["scenario"] == "normal")]
-  plt.plot(subset["c"], subset["requests_per_sec"], marker='o', label=mode)
-plt.title("Requests por Segundo (Cenário Normal)")
-plt.xlabel("Concorrência (-c)")
-plt.ylabel("req/s")
-plt.legend()
-plt.grid(True)
-plt.savefig(os.path.join(RESULTS_DIR, "requests_per_sec_full.png"))
-plt.close()
 
-plt.figure(figsize=(10, 6))
-for mode in MODES:
-  subset = df[(df["mode"] == mode) & (df["scenario"] == "normal")]
-  plt.plot(subset["c"], subset["time_per_req"], marker='o', label=mode)
-plt.title("Tempo Médio por Requisição (ms)")
-plt.xlabel("Concorrência (-c)")
-plt.ylabel("ms")
-plt.legend()
-plt.grid(True)
-plt.savefig(os.path.join(RESULTS_DIR, "time_per_request_full.png"))
+
+def plot_metric(metric, ylabel, filename, title):
+  rows = len(SCENARIOS)
+  fig, axes = plt.subplots(rows, 1, figsize=(6, 4 * rows), sharey=True)
+
+  if rows == 1:
+    axes = [axes]
+
+  c_values = sorted(df["c"].unique())
+  x = np.arange(len(c_values))
+  width = 0.7 / len(MODES) if MODES else 0.7
+
+  for i, scenario in enumerate(SCENARIOS):
+    ax = axes[i]
+    subset = df[df["scenario"] == scenario]
+    for idx, mode in enumerate(MODES):
+      mode_subset = subset[subset["mode"] == mode]
+      values = []
+      for c_val in c_values:
+        data = mode_subset[mode_subset["c"] == c_val][metric]
+        values.append(data.mean() if not data.empty else 0)
+      offsets = x - 0.35 + idx * width + width / 2
+      ax.bar(offsets, values, width=width,
+             label=mode if i == 0 else "")
+    ax.set_title(f"Cenário: {scenario.capitalize()}")
+    ax.set_xlabel("Concorrência (-c)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(v) for v in c_values])
+    ax.grid(True, axis="y", alpha=0.3)
+    if i == 0:
+      ax.set_ylabel(ylabel)
+
+  handles, labels = axes[0].get_legend_handles_labels()
+  fig.legend(handles, labels, loc="upper center", ncol=len(MODES))
+  fig.suptitle(title)
+  fig.tight_layout(rect=(0, 0, 1, 0.88))
+  fig.savefig(os.path.join(RESULTS_DIR, filename))
+  plt.close(fig)
+
+
+plot_metric(
+    metric="requests_per_sec",
+    ylabel="req/s",
+    filename="requests_per_sec_full.png",
+    title="Requests por Segundo")
+
+plot_metric(
+    metric="time_per_req",
+    ylabel="ms",
+    filename="time_per_request_full.png",
+    title="Tempo Médio por Requisição")
+
+# Distribuição dos backends (stacked bar)
+share_cols = [f"{backend}_share" for backend in BACKENDS]
+agg = (df.groupby(["mode", "scenario"])[share_cols]
+       .mean()
+       .reset_index())
+labels = [f"{row.mode}\n{row.scenario}" for row in agg.itertuples()]
+bottom = np.zeros(len(agg))
+plt.figure(figsize=(12, 6))
+for backend in BACKENDS:
+  plt.bar(labels, agg[f"{backend}_share"], bottom=bottom, label=backend)
+  bottom += agg[f"{backend}_share"]
+plt.title("Distribuição de Requisições por Backend (média)")
+plt.ylabel("Proporção")
+plt.ylim(0, 1)
+plt.legend(title="Backend")
+plt.grid(axis="y", alpha=0.2)
+plt.savefig(os.path.join(RESULTS_DIR, "backend_distribution_full.png"))
 plt.close()
 
 print("✅ Gráficos atualizados em results/")

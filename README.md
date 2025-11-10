@@ -87,10 +87,11 @@ Os modos são configurados automaticamente pelo script:
 O script `test_runner.py` automatiza:
 
 * 🔁 Troca dos algoritmos de balanceamento
-* ⚙️ Testes com múltiplas cargas (`-n 500, 1000, 2000` e `-c 10, 50, 100`)
+* ⚙️ Testes com múltiplas cargas (`-n 500 / -c 10` e `-n 1000 / -c 100`)
 * 💥 Simulação de falha pausando uma instância backend (`docker pause`)
 * ♻️ Restauração automática (`docker unpause`)
-* 📊 Coleta de métricas e geração de gráficos
+* 📊 Coleta de métricas dos logs do Nginx (requests/s, tempo médio, volume por backend e tempo médio por backend)
+* 📈 Geração de gráficos diretamente em `results/`
 
 ### Rodar os testes:
 
@@ -104,33 +105,45 @@ Os resultados e gráficos são salvos automaticamente na pasta `results/`.
 
 ## 📊 Resultados dos Testes
 
-Após rodar o script, os seguintes gráficos são gerados automaticamente:
+Após rodar o script, os seguintes gráficos são gerados automaticamente (todos considerando os cenários `normal` e `falha`):
 
-### 📈 **Requests por Segundo**
+### 📊 **Requests por Segundo (barras por concorrência)**
+
+Mostra a taxa de requisições por segundo para cada algoritmo e nível de concorrência (`c=10` e `c=100`). O eixo X é discreto, o que facilita comparar o impacto de cada algoritmo nos dois patamares de carga.
 
 ![Requests por Segundo](results/requests_per_sec_full.png)
 
 ### ⏱️ **Tempo Médio por Requisição**
 
+Segue o mesmo formato do gráfico de requests por segundo e ajuda a enxergar a relação direta entre aumento de concorrência, algoritmo escolhido e tempo médio em milissegundos.
+
 ![Tempo Médio por Requisição](results/time_per_request_full.png)
 
 ### ⚖️ **Distribuição de Requisições por Servidor**
 
-![Distribuição de Requisições por Servidor](results/server_distribution_full.png)
+Gráfico de barras empilhadas exibindo a fração média de requisições entregue a cada backend para o par (algoritmo, cenário). A leitura mostra rapidamente quando um algoritmo concentra carga em um backend específico ou divide o tráfego de forma uniforme.
+
+![Distribuição de Requisições por Servidor](results/backend_distribution_full.png)
 
 ---
 
 ## 🧮 Exemplo de Resultados (trecho do CSV)
 
-| Algoritmo   | Requisições | Concorrência | Cenário | Req/s | Tempo (ms) | web1 | web2 | web3 |
-| ----------- | ----------- | ------------ | ------- | ----- | ---------- | ---- | ---- | ---- |
-| round_robin | 1000        | 50           | normal  | 722   | 69.5       | 334  | 333  | 333  |
-| round_robin | 1000        | 50           | falha   | 470   | 110.2      | 0    | 500  | 500  |
-| least_conn  | 1000        | 50           | normal  | 745   | 68.1       | 300  | 400  | 300  |
-| least_conn  | 1000        | 50           | falha   | 510   | 96.3       | 0    | 610  | 390  |
-| ip_hash     | 1000        | 50           | normal  | 710   | 71.0       | 500  | 0    | 500  |
+Cada linha do `results/results_full.csv` contém:
 
-> Os valores reais serão registrados no arquivo `results/results_full.csv` após a execução do script.
+- `mode`, `scenario`, `n`, `c` e métricas globais (`requests_per_sec`, `time_per_req`)
+- Para cada backend: número de requisições (`webX_requests`), tempo médio (`webX_avg_time_ms`) e participação relativa (`webX_share`)
+
+Exemplo ilustrativo:
+
+| mode        | scenario | n    | c   | requests_per_sec | time_per_req | web1_share | web2_share | web3_share |
+| ----------- | -------- | ---- | --- | ---------------- | ------------ | ---------- | ---------- | ---------- |
+| round_robin | normal   | 500  | 10  | 730.5            | 13.7         | 0.34       | 0.33       | 0.33       |
+| round_robin | falha    | 500  | 10  | 482.1            | 20.7         | 0.00       | 0.48       | 0.52       |
+| least_conn  | normal   | 1000 | 100 | 705.2            | 141.9        | 0.28       | 0.44       | 0.28       |
+| ip_hash     | normal   | 1000 | 100 | 690.8            | 144.8        | 0.50       | 0.00       | 0.50       |
+
+> Rode `python3 test_runner.py` para gerar os valores reais de acordo com o ambiente e os logs capturados.
 
 ---
 
@@ -173,10 +186,10 @@ Coletas automáticas pelo script:
 
 ## 📚 Análise dos Resultados
 
-| Algoritmo             | Observação                                                                             |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| **Round Robin**       | Distribui requisições de forma uniforme, mas sofre levemente sob falhas.               |
-| **Least Connections** | Apresentou melhor desempenho sob carga variável e durante falhas.                      |
-| **IP Hash**           | Mantém persistência de sessão entre cliente e servidor, útil para sistemas com estado. |
+| Algoritmo             | Observação                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------- |
+| **Round Robin**       | Distribui requisições de forma uniforme em cenários normais; sob falha divide carga remanescente. |
+| **Least Connections** | Tende a priorizar servidores menos ocupados, mantendo boa taxa de requisições mesmo com `c=100`.   |
+| **IP Hash**           | Direciona cada cliente a um backend específico (sessões pegajosas); evidenciado pelo gráfico de distribuição. |
 
-> O ambiente mostrou alta disponibilidade e capacidade de redistribuir requisições automaticamente, mesmo sob falhas simuladas.
+> Todas as métricas (gráficos e CSV) vêm diretamente dos logs reais do Nginx e permitem comparar os algoritmos nos dois cenários principais.
