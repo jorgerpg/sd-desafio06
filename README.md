@@ -87,7 +87,7 @@ Os modos são configurados automaticamente pelo script:
 O script `test_runner.py` automatiza:
 
 * 🔁 Troca dos algoritmos de balanceamento
-* ⚙️ Testes com múltiplas cargas (`-n 500 / -c 10` e `-n 1000 / -c 100`)
+* ⚙️ Testes com múltiplas cargas (`-n 1000 / -c 10` e `-n 1000 / -c 100`)
 * 💥 Simulação de falha pausando uma instância backend (`docker pause`)
 * ♻️ Restauração automática (`docker unpause`)
 * 📊 Coleta de métricas dos logs do Nginx (requests/s, tempo médio, volume por backend e tempo médio por backend)
@@ -138,8 +138,8 @@ Exemplo ilustrativo:
 
 | mode        | scenario | n    | c   | requests_per_sec | time_per_req | web1_share | web2_share | web3_share |
 | ----------- | -------- | ---- | --- | ---------------- | ------------ | ---------- | ---------- | ---------- |
-| round_robin | normal   | 500  | 10  | 730.5            | 13.7         | 0.34       | 0.33       | 0.33       |
-| round_robin | falha    | 500  | 10  | 482.1            | 20.7         | 0.00       | 0.48       | 0.52       |
+| round_robin | normal   | 1000 | 10  | 730.5            | 13.7         | 0.34       | 0.33       | 0.33       |
+| round_robin | falha    | 1000 | 10  | 482.1            | 20.7         | 0.00       | 0.48       | 0.52       |
 | least_conn  | normal   | 1000 | 100 | 705.2            | 141.9        | 0.28       | 0.44       | 0.28       |
 | ip_hash     | normal   | 1000 | 100 | 690.8            | 144.8        | 0.50       | 0.00       | 0.50       |
 
