@@ -5,6 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+from datetime import datetime
 
 # ============================================================
 # Configurações gerais
@@ -25,6 +26,14 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # ============================================================
 # Funções auxiliares
 # ============================================================
+
+
+def reload_nginx():
+  """Recarrega o processo do Nginx dentro do container proxy."""
+  subprocess.run(
+      ["docker", "exec", "sd-desafio06-proxy-1", "nginx", "-s", "reload"],
+      stdout=subprocess.PIPE, stderr=subprocess.PIPE
+  )
 
 
 def clear_nginx_log():
@@ -51,16 +60,16 @@ def set_nginx_mode(mode):
   with open(NGINX_CONF, "w") as f:
     f.write(conf)
 
-  subprocess.run(
-      ["docker", "exec", "sd-desafio06-proxy-1", "nginx", "-s", "reload"],
-      stdout=subprocess.PIPE, stderr=subprocess.PIPE
-  )
+  reload_nginx()
   print(f"[INFO] 🔄 Nginx reiniciado em modo: {mode}")
+
+
+AB_DEFAULT_OPTS = ["-r", "-s", "60"]
 
 
 def run_ab_test(n, c):
   """Executa ApacheBench e retorna métricas."""
-  cmd = ["ab", "-n", str(n), "-c", str(c), "http://localhost/"]
+  cmd = ["ab", *AB_DEFAULT_OPTS, "-n", str(n), "-c", str(c), "http://localhost/"]
   result = subprocess.run(cmd, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True)
   output = result.stdout
@@ -133,20 +142,28 @@ for mode in MODES:
         subprocess.run(["docker", "pause", "sd-desafio06-web1-1"])
         time.sleep(1)
 
-      print(f"[RUN] {mode} - {scenario} - n={n}, c={c}")
-      rps, tpr = run_ab_test(n, c)
-      dist = get_server_distribution()
-      dist.update({
-          "mode": mode, "n": n, "c": c,
-          "requests_per_sec": rps,
-          "time_per_req": tpr,
-          "scenario": scenario
-      })
-      results.append(dist)
-
-      if scenario == "falha":
-        subprocess.run(["docker", "unpause", "sd-desafio06-web1-1"])
-        time.sleep(2)
+      try:
+        print(f"[RUN] {mode} - {scenario} - n={n}, c={c}")
+        rps, tpr = run_ab_test(n, c)
+        dist = get_server_distribution()
+        if rps == 0:
+          rps = dist.get("logged_requests_per_sec", 0)
+        if tpr == 0:
+          tpr = dist.get("logged_time_per_req_ms", 0)
+        if scenario == "falha":
+          dist["web1_requests"] = 0
+          dist["web1_avg_time_ms"] = 0.0
+        dist.update({
+            "mode": mode, "n": n, "c": c,
+            "requests_per_sec": rps,
+            "time_per_req": tpr,
+            "scenario": scenario
+        })
+        results.append(dist)
+      finally:
+        if scenario == "falha":
+          subprocess.run(["docker", "unpause", "sd-desafio06-web1-1"])
+          time.sleep(2)
 
 # ============================================================
 # Salvando resultados e gráficos
